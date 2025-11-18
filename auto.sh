@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 IFS=$'\n\t'
+set -o errtrace
+
+# Logging: capture all output to a log file for debugging; avoid printing secrets later
+LOG=/tmp/arch-install.log
+rm -f "$LOG" || true
+touch "$LOG"
+exec > >(tee -a "$LOG") 2>&1
+
+# On error, show a short hint and tail of log
+err_report(){
+    local rc=$?
+    echo -e "\n[✗] Lỗi xảy ra tại dòng ${BASH_LINENO[0]} (exit ${rc}). Xem log: $LOG" >&2
+    echo "--- TAIL $LOG (last 200 lines) ---" >&2
+    tail -n 200 "$LOG" >&2 || true
+}
+trap err_report ERR
 
 # COLOR
 RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m' BLUE='\033[1;34m' MAGENTA='\033[0;35m' NC='\033[0m'
@@ -20,16 +36,47 @@ trap cleanup EXIT
 
 clear
 echo -e "${MAGENTA}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${MAGENTA}║   Arch + Hyprland Invincible-Dots – IMPROVED 2025     ║${NC}"
+echo -e "${MAGENTA}║   Arch + Hyprland Invincible-Dots – IMPROVED 2025    ║${NC}"
 echo -e "${MAGENTA}╚══════════════════════════════════════════════════════╝${NC}"
 
 # quick internet check
 ping -c 1 1.1.1.1 &>/dev/null || error "Không có Internet! (No Internet)"
+s
+# helper: ensure required commands exist (fatal)
+require_cmd(){
+    local cmd="$1"
+    if ! command -v "$cmd" &>/dev/null; then
+        error "Thiếu lệnh cần thiết: $cmd — dừng script. Cài đặt package tương ứng trên ArchISO trước khi chạy."
+    fi
+}
+
+# retry wrapper (cmd as string), retries with backoff
+retry_cmd(){
+    local tries=3 delay=3 i=0 rc=0
+    while (( i < tries )); do
+        if "${@}"; then
+            return 0
+        fi
+        rc=$?
+        i=$((i+1))
+        warn "Lệnh thất bại (exit $rc). Thử lại (${i}/${tries}) sau ${delay}s..."
+        sleep $delay
+        delay=$((delay*2))
+    done
+    return $rc
+}
+
+# fail-fast check for essential tools used by the script (available on ArchISO)
+# Fail-fast for truly required tools
+CRITICAL_CMDS=(sgdisk partprobe mkfs.fat mkfs.ext4 mkswap genfstab pacstrap arch-chroot lsblk wipefs blkid sed grep awk uname)
+for c in "${CRITICAL_CMDS[@]}"; do
+    require_cmd "$c" || true
+done
 
 # attempt to install reflector if missing
 if ! command -v reflector &>/dev/null; then
     info "Cố gắng cài reflector tạm thời..."
-    pacman -Sy --noconfirm reflector || warn "Không thể cài reflector — bỏ qua."
+    retry_cmd pacman -Sy --noconfirm reflector || warn "Không thể cài reflector — bỏ qua."
 fi
 
 # update mirrorlist if reflector available
@@ -190,7 +237,8 @@ mount "$ROOT" /mnt
 # ensure /mnt/etc exists before genfstab later
 mkdir -p /mnt/etc
 if [[ "$BOOT_MODE" == "uefi" ]]; then
-    mount --mkdir "$EFI" /mnt/boot/efi
+    # Mount EFI to /boot so bootctl (systemd-boot) works with --path=/boot inside chroot
+    mount --mkdir "$EFI" /mnt/boot
 else
     mkdir -p /mnt/boot
 fi
@@ -200,7 +248,10 @@ genfstab -U /mnt > /mnt/etc/fstab || warn "genfstab gặp vấn đề — nhưng
 
 # ---------- 5. Pacstrap
 info "Pacstrap base system..."
-pacstrap -K /mnt base base-devel linux linux-firmware linux-headers git vim sudo networkmanager polkit seatd intel-ucode amd-ucode efibootmgr dosfstools grub || warn "pacstrap gặp lỗi, kiểm tra logs"
+PACKAGES=(base base-devel linux linux-firmware linux-headers git vim sudo networkmanager polkit seatd intel-ucode amd-ucode efibootmgr dosfstools grub)
+
+# Use retry wrapper to make transient network/pacman failures less fatal
+retry_cmd pacstrap -K /mnt "${PACKAGES[@]}" || error "pacstrap thất bại sau nhiều lần thử. Kiểm tra mạng và gói." 
 
 # ---------- 6. Prepare chroot script (improved)
 cat > /mnt/install.sh <<'EOF'
@@ -273,16 +324,31 @@ systemctl enable NetworkManager sddm seatd pipewire wireplumber pipewire-pulse |
 # Bootloader install
 if [[ "$BOOT_MODE" == "uefi" ]]; then
     pacman -S --noconfirm --needed efibootmgr dosfstools || true
-    # install systemd-boot
-    bootctl --path=/boot install || true
-    ROOT_UUID=$(blkid -s UUID -o value "$ROOT" 2>/dev/null || true)
-    mkdir -p /boot/loader/entries
-    cat > /boot/loader/entries/arch.conf <<LOADER
+    # install systemd-boot; if it fails, try grub-efi fallback
+    if bootctl --path=/boot install; then
+        ROOT_UUID=$(blkid -s UUID -o value "$ROOT" 2>/dev/null || true)
+        mkdir -p /boot/loader/entries
+        if [[ -n "$ROOT_UUID" ]]; then
+            cat > /boot/loader/entries/arch.conf <<LOADER
 title   Arch Linux
 linux   /vmlinuz-linux
 initrd  /initramfs-linux.img
 options root=UUID=${ROOT_UUID} rw
 LOADER
+        else
+            cat > /boot/loader/entries/arch.conf <<LOADER
+title   Arch Linux
+linux   /vmlinuz-linux
+initrd  /initramfs-linux.img
+options root=${ROOT} rw
+LOADER
+        fi
+    else
+        warn "bootctl cài thất bại — thử fallback cài grub EFI"
+        pacman -S --noconfirm --needed grub efibootmgr dosfstools || true
+        grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB || true
+        grub-mkconfig -o /boot/grub/grub.cfg || true
+    fi
 else
     # BIOS -> install grub
     pacman -S --noconfirm --needed grub || true
@@ -368,7 +434,8 @@ swapoff -a 2>/dev/null || true
 
 echo -e "${MAGENTA}╔════════════════════════════════════════════════╗${NC}"
 echo -e "${MAGENTA}║           CÀI XONG 100% – IMPROVED SCRIPT      ║${NC}"
-echo -e "${MAGENTA}║   User : $USERNAME     Pass: $USER_PASS        ${NC}"
-echo -e "${MAGENTA}║   Root : $ROOT_PASS                              ${NC}"
+echo -e "${MAGENTA}║   User : $USERNAME                              ${NC}"
+echo -e "${MAGENTA}║   Root : (password set)                          ${NC}"
 echo -e "${MAGENTA}╚════════════════════════════════════════════════╝${NC}"
 echo -e "${GREEN}Script by TYNO – IMPROVED 2025 ${NC}"
+echo -e "Log file: $LOG"
