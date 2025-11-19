@@ -41,7 +41,6 @@ echo -e "${MAGENTA}╚═══════════════════�
 
 # quick internet check
 ping -c 1 1.1.1.1 &>/dev/null || error "Không có Internet! (No Internet)"
-s
 # helper: ensure required commands exist (fatal)
 require_cmd(){
     local cmd="$1"
