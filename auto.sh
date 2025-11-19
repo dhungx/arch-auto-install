@@ -72,6 +72,22 @@ for c in "${CRITICAL_CMDS[@]}"; do
     require_cmd "$c" || true
 done
 
+# Fix pacman.conf: remove invalid comment lines from [multilib] section
+info "Kiểm tra & sửa /etc/pacman.conf..."
+if [[ -f /etc/pacman.conf ]]; then
+    # Remove lines that look like comments but are inside [multilib] section
+    sed -i '/\[multilib\]/,/^\[/{/^[^#]*An example of\|^[^#]*tips on/d;}' /etc/pacman.conf || true
+    
+    # Uncomment [multilib] section if it's commented out
+    sed -i '/^\s*#\s*\[multilib\]/,/\[/{s/^\s*#\s*//}' /etc/pacman.conf || true
+fi
+
+# Initialize pacman database if needed
+if [[ ! -d /var/lib/pacman/sync ]]; then
+    info "Khởi tạo pacman database..."
+    mkdir -p /var/lib/pacman/sync || true
+fi
+
 # attempt to install reflector if missing
 if ! command -v reflector &>/dev/null; then
     info "Cố gắng cài reflector tạm thời..."
@@ -82,6 +98,13 @@ fi
 if command -v reflector &>/dev/null; then
     info "Chọn mirror (Vietnam ưu tiên)..."
     reflector --country Vietnam --latest 5 --sort rate --save /etc/pacman.d/mirrorlist --verbose || warn "reflector thất bại."
+else
+    # Fallback: use default mirrorlist
+    info "Sử dụng mirrorlist mặc định..."
+    if [[ ! -f /etc/pacman.d/mirrorlist ]] || ! grep -q '^Server' /etc/pacman.d/mirrorlist; then
+        mkdir -p /etc/pacman.d
+        echo "Server = https://mirror.example.com/archlinux/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist || true
+    fi
 fi
 
 # ---------- helper: read with default
