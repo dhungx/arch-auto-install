@@ -75,11 +75,14 @@ done
 # Fix pacman.conf: remove invalid comment lines from [multilib] section
 info "Kiểm tra & sửa /etc/pacman.conf..."
 if [[ -f /etc/pacman.conf ]]; then
-    # Remove lines that look like comments but are inside [multilib] section
-    sed -i '/\[multilib\]/,/^\[/{/^[^#]*An example of\|^[^#]*tips on/d;}' /etc/pacman.conf || true
+    # Remove lines with 'An example of' or 'tips on' that appear in [multilib] section
+    sed -i '/\[multilib\]/,/^\[/{/An example of\|tips on/d;}' /etc/pacman.conf || true
     
     # Uncomment [multilib] section if it's commented out
-    sed -i '/^\s*#\s*\[multilib\]/,/\[/{s/^\s*#\s*//}' /etc/pacman.conf || true
+    sed -i '/^\s*#\s*\[multilib\]/,/^\[/{s/^\s*#\s*//}' /etc/pacman.conf || true
+    
+    # Uncomment Include line in [multilib] if commented
+    sed -i '/^\s*#\s*Include = \/etc\/pacman.d\/mirrorlist/{s/^\s*#\s*//}' /etc/pacman.conf || true
 fi
 
 # Initialize pacman database if needed
@@ -103,8 +106,31 @@ else
     info "Sử dụng mirrorlist mặc định..."
     if [[ ! -f /etc/pacman.d/mirrorlist ]] || ! grep -q '^Server' /etc/pacman.d/mirrorlist; then
         mkdir -p /etc/pacman.d
-        echo "Server = https://mirror.example.com/archlinux/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist || true
+        echo "Server = https://mirrors.huongnguyen.dev/arch/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist || true
     fi
+fi
+
+# Ensure at least one server is configured in pacman.conf main repos
+if ! grep -E '^\[core\]|^\[extra\]|^\[multilib\]' /etc/pacman.conf | head -1 | grep -q '^'; then
+    warn "Không tìm thấy repository section — thêm mặc định..."
+    cat >> /etc/pacman.conf <<'REPOS'
+
+[core]
+Include = /etc/pacman.d/mirrorlist
+
+[extra]
+Include = /etc/pacman.d/mirrorlist
+
+[multilib]
+Include = /etc/pacman.d/mirrorlist
+REPOS
+fi
+
+# Verify mirrorlist is not empty
+if [[ ! -s /etc/pacman.d/mirrorlist ]]; then
+    warn "mirrorlist trống — sử dụng server fallback..."
+    mkdir -p /etc/pacman.d
+    echo "Server = https://mirrors.huongnguyen.dev/arch/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist || true
 fi
 
 # ---------- helper: read with default
@@ -285,9 +311,12 @@ export USERNAME HOSTNAME USER_PASS ROOT_PASS TIMEZONE LANG_CODE KEYMAP DISK BOOT
 
 # Enable multilib if commented (cho lib32)
 if grep -q '^\s*#\s*\[multilib\]' /etc/pacman.conf; then
-    sed -i '/^\s*#\s*\[multilib\]/,/\[/{s/^\s*#\s*//}' /etc/pacman.conf || true
+    sed -i '/^\s*#\s*\[multilib\]/,/^\[/{s/^\s*#\s*//}' /etc/pacman.conf || true
     pacman -Syu --noconfirm || true
 fi
+
+# Remove any invalid comment lines in [multilib] section
+sed -i '/\[multilib\]/,/^\[/{/An example of\|tips on/d;}' /etc/pacman.conf || true
 
 # Time & Locale
 ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
