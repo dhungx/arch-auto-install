@@ -263,8 +263,7 @@ if [[ "$BOOT_MODE" == "uefi" ]]; then
     sgdisk -n 2:0:+8G   -t 2:8200 -c 2:"Swap"  "$DISK"
     sgdisk -n 3:0:0     -t 3:8300 -c 3:"Root"  "$DISK"
 else
-    BIOS_GUID=21686148-6449-6E6F-744E-656564454649
-    sgdisk -n 1:0:+2M -t 1:${BIOS_GUID} -c 1:"BIOSBOOT" "$DISK"
+    sgdisk -n 1:0:+2M -t 1:EF02 -c 1:"BIOSBOOT" "$DISK"
     sgdisk -n 2:0:+8G   -t 2:8200 -c 2:"Swap"  "$DISK"
     sgdisk -n 3:0:0     -t 3:8300 -c 3:"Root"  "$DISK"
 fi
