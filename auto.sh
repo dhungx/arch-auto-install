@@ -148,7 +148,6 @@ fi
 
 # read_default helper
 read_default(){
-read_default(){
     local prompt="$1" default="$2" var
     read -rp "$prompt" var
     echo "${var:-$default}"
