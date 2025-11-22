@@ -38,7 +38,7 @@ echo -e “${MAGENTA}╚══════════════════�
 # Quick internet check (non-fatal — attempt fallback DNS if ping fails)
 if ! ping -c 1 -W 2 1.1.1.1 &>/dev/null; then
 warn “Không ping được 1.1.1.1 — thử kiểm tra kết nối DNS/HTTP…”
-if ! host archlinux.org &>/dev/null || ! curl -fsS –max-time 5 https://archlinux.org/ &>/dev/null; then
+if ! host archlinux.org &>/dev/null || ! curl -fsS --max-time 5 https://archlinux.org/ &>/dev/null; then
 error “Không có Internet. Kiểm tra kết nối mạng và thử lại.”
 fi
 fi
@@ -80,7 +80,7 @@ done
 if ! pgrep -x “gpg-agent” &>/dev/null && command -v pacman-key &>/dev/null; then
 info “Đảm bảo pacman keyring đã được khởi tạo…”
 if [ ! -d /etc/pacman.d/gnupg ] || [ -z “$(ls -A /etc/pacman.d/gnupg 2>/dev/null || true)” ]; then
-pacman-key –init || true
+pacman-key --init || true
 pacman-key –populate archlinux || true
 fi
 fi
@@ -154,7 +154,7 @@ read -rp “ → (mặc định 2): “ lang_choice; lang_choice=${lang_choice:-
 case $lang_choice in
 3) LANG_CODE=“ja_JP.UTF-8”; KEYMAP=“jp106” ;;
 
-1. LANG_CODE=“en_US.UTF-8”; KEYMAP=“us” ;;
+1) LANG_CODE="en_US.UTF-8"; KEYMAP="us" ;;
    *) LANG_CODE=“vi_VN.UTF-8”; KEYMAP=“us” ;;
    esac
 
@@ -172,7 +172,7 @@ fi
 while :; do
 read -rp “${BLUE}Username (a-z 0-9 _ -, mặc định: user): ${NC}” INPUT_USER
 USERNAME=${INPUT_USER:-user}
-if [[ “$USERNAME” =~ ^[a-z_]{0,31}$ ]]; then break; else warn “Username chỉ được a-z, 0-9, _, - và không bắt đầu bằng số!”; fi
+if [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then break; else warn “Username chỉ được a-z, 0-9, _, - và không bắt đầu bằng số!”; fi
 done
 
 while :; do
@@ -325,7 +325,7 @@ mount “$ROOT” /mnt || error “Mount root thất bại”
 mkdir -p /mnt/etc
 
 if [[ “$BOOT_MODE” == “uefi” ]]; then
-mount –mkdir “$EFI” /mnt/boot || error “Mount EFI thất bại”
+mount --mkdir "$EFI" /mnt/boot || error “Mount EFI thất bại”
 else
 mkdir -p /mnt/boot
 fi
