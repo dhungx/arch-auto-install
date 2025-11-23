@@ -103,9 +103,13 @@ fi
 # Fix pacman.conf: safely ensure repo sections exist and multilib uncommented
 info "Kiểm tra & sửa /etc/pacman.conf..."
 if [[ -f /etc/pacman.conf ]]; then
-    # Try to uncomment common multilib and mirrorlist lines (best-effort)
-    sed -i '/^\s*#\s*\[multilib\]/,/^$/s/^\s*#\s*//' /etc/pacman.conf || true
-    sed -i '/^\s*#\s*Include = \/etc\/pacman.d\/mirrorlist/s/^\s*#\s*//' /etc/pacman.conf || true
+    # Safely uncomment only the [multilib] header and its Include line
+    # Avoid uncommenting unrelated blocks by only touching the exact header
+    sed -i 's/^\s*#\s*\(\[multilib\]\)/\1/' /etc/pacman.conf || true
+    # Uncomment the Include line that is associated with the multilib header (first occurrence after header)
+    sed -i '0,/\[multilib\]/{/Include *= *\/etc\/pacman.d\/mirrorlist/s/^\s*#\s*//}' /etc/pacman.conf || true
+    # Also ensure any explicitly commented global Include lines are safely uncommented
+    sed -i 's/^\s*#\s*Include = \/etc\/pacman.d\/mirrorlist/Include = \/etc\/pacman.d\/mirrorlist/' /etc/pacman.conf || true
 fi
 
 # ensure /var/lib/pacman/sync exists
@@ -272,6 +276,11 @@ else
     warn "Không tìm thấy EFI vars - hệ đang ở chế độ BIOS/Legacy. Sẽ tạo BIOS boot partition."
 fi
 
+# Backup partition table (safety)
+BACKUP_FILE="/root/partition-table-$(basename "$DISK")-$(date +%s).bin"
+info "Sao lưu partition table vào $BACKUP_FILE"
+sgdisk --backup="$BACKUP_FILE" "$DISK" 2>/dev/null || warn "Không thể backup partition table - tiếp tục nhưng KHÔNG có backup"
+
 # clean disk
 wipefs -af "$DISK" 2>/dev/null || warn "wipefs gặp lỗi nhưng tiếp tục..."
 sgdisk -Z "$DISK" 2>/dev/null || true
@@ -367,10 +376,26 @@ if ! grep -q "^UUID=" /mnt/etc/fstab && ! grep -q "^/dev/" /mnt/etc/fstab; then
 fi
 
 # Verify root partition is in fstab
-if ! grep -q "/[[:space:]]*ext4" /mnt/etc/fstab; then
-    warn "Không tìm thấy root partition trong fstab. Nội dung fstab:"
+if ! grep -q "[[:space:]]/\([[:space:]]\|$\)" /mnt/etc/fstab || ! grep -q "ext4" /mnt/etc/fstab; then
+    warn "Không tìm thấy rõ root partition (ext4) trong fstab. Nội dung fstab:"
     cat /mnt/etc/fstab
     error "fstab thiếu root mount - dừng để tránh lỗi boot."
+fi
+
+# Verify swap entry exists
+if ! grep -q "[[:space:]]swap[[:space:]]" /mnt/etc/fstab; then
+    warn "Không tìm thấy swap trong fstab - hệ có thể không kích hoạt swap sau boot. Nội dung fstab:"
+    cat /mnt/etc/fstab
+    error "fstab thiếu swap entry - dừng để tránh lỗi hệ thống." 
+fi
+
+# Verify boot/efi mount exists for UEFI systems
+if [[ "$BOOT_MODE" == "uefi" ]]; then
+    if ! grep -q "[[:space:]]/boot[[:space:]]" /mnt/etc/fstab; then
+        warn "Không tìm thấy mount /boot trong fstab cho hệ UEFI. Nội dung fstab:"
+        cat /mnt/etc/fstab
+        error "fstab thiếu /boot entry - hệ sẽ không boot được trong UEFI mode."
+    fi
 fi
 
 info "✓ fstab hợp lệ"
@@ -394,7 +419,9 @@ error(){ echo -e "[✗] $*"; exit 1; }
 
 # ensure multilib enabled (best-effort)
 if grep -q '^\s*#\s*\[multilib\]' /etc/pacman.conf; then
-    sed -i '/^\s*#\s*\[multilib\]/,/^$/s/^\s*#\s*//' /etc/pacman.conf || true
+    # Safely uncomment only the header and associated Include line
+    sed -i 's/^\s*#\s*\(\[multilib\]\)/\1/' /etc/pacman.conf || true
+    sed -i '0,/\[multilib\]/{/Include *= *\/etc\/pacman.d\/mirrorlist/s/^\s*#\s*//}' /etc/pacman.conf || true
     pacman -Syu --noconfirm || true
 fi
 
@@ -402,13 +429,18 @@ fi
 ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime || error "Timezone link thất bại"
 hwclock --systohc || true
 
-# Use safe sed delimiter (|) to handle paths with slashes
-sed -i "s|^#\s*\($LANG_CODE.*\)|\1|" /etc/locale.gen || true
+# Ensure requested locale is available; fallback to en_US if not
+if ! grep -q "^${LANG_CODE%.*}" /etc/locale.gen 2>/dev/null; then
+    warn "Locale $LANG_CODE không có trong /etc/locale.gen — sẽ dùng en_US.UTF-8"
+    LANG_CODE="en_US.UTF-8"
+fi
+# Uncomment only the exact requested locale
+sed -i "s/^#\s*${LANG_CODE}/${LANG_CODE}/" /etc/locale.gen || true
 
 # Generate locale and verify
 if ! locale-gen; then
     warn "locale-gen thất bại, thử fallback en_US.UTF-8"
-    sed -i 's/^#\s*\(en_US.UTF-8\)/\1/' /etc/locale.gen
+    sed -i 's/^#\s*\(en_US.UTF-8\)/\1/' /etc/locale.gen || true
     locale-gen || error "locale-gen fallback cũng thất bại"
 fi
 echo "LANG=$LANG_CODE" > /etc/locale.conf
@@ -446,27 +478,35 @@ if [[ $IS_VM != "none" ]] && [[ $IS_VM != "oracle" ]]; then
     warn "VM không được hỗ trợ chính thức. Phát hiện: $IS_VM."
 fi
 
-HAS_NVIDIA=0
-if [[ $IS_VM == "none" ]] && lspci | grep -iq 'VGA.*NVIDIA'; then
-    HAS_NVIDIA=1
-    info "Phát hiện NVIDIA GPU - cài driver..."
-    pacman -S --noconfirm --needed nvidia nvidia-utils lib32-nvidia-utils nvidia-settings || true
+    HAS_NVIDIA=0
+    if [[ $IS_VM == "none" ]] && lspci | grep -iq 'VGA.*NVIDIA'; then
+        HAS_NVIDIA=1
+        info "Phát hiện NVIDIA GPU - cài driver..."
+        pacman -S --noconfirm --needed nvidia nvidia-utils lib32-nvidia-utils nvidia-settings || true
 
-    # Prevent duplicate nvidia modules in mkinitcpio.conf
-    if ! grep -q "nvidia" /etc/mkinitcpio.conf; then
-        info "Thêm NVIDIA modules vào mkinitcpio.conf"
-        if grep -q '^MODULES=' /etc/mkinitcpio.conf; then
-            sed -i 's/^MODULES=(\(.*\))/MODULES=(\1 nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf
+        # Safely add NVIDIA modules to MODULES=(...) in mkinitcpio.conf (idempotent)
+        if ! grep -qi "nvidia" /etc/mkinitcpio.conf; then
+            info "Thêm NVIDIA modules vào mkinitcpio.conf (an toàn & idempotent)"
+            if grep -q '^MODULES=' /etc/mkinitcpio.conf; then
+                current=$(sed -n 's/^MODULES=(\(.*\))/\1/p' /etc/mkinitcpio.conf || true)
+                for m in nvidia nvidia_modeset nvidia_uvm nvidia_drm; do
+                    if [[ ! " $current " =~ " $m " ]]; then
+                        current="$current $m"
+                    fi
+                done
+                # normalize spaces
+                current=$(echo $current)
+                sed -i "s|^MODULES=(.*)|MODULES=($current)|" /etc/mkinitcpio.conf || true
+            else
+                echo 'MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)' >> /etc/mkinitcpio.conf
+            fi
         else
-            echo 'MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)' >> /etc/mkinitcpio.conf
+            info "NVIDIA modules đã có trong mkinitcpio.conf - bỏ qua"
         fi
     else
-        info "NVIDIA modules đã có trong mkinitcpio.conf - bỏ qua"
+        info "Cài Mesa drivers..."
+        pacman -S --noconfirm --needed mesa lib32-mesa vulkan-icd-loader lib32-vulkan-icd-loader || true
     fi
-else
-    info "Cài Mesa drivers..."
-    pacman -S --noconfirm --needed mesa lib32-mesa vulkan-icd-loader lib32-vulkan-icd-loader || true
-fi
 
 # core packages
 info "Cài đặt Hyprland và packages chính..."
@@ -490,18 +530,31 @@ if [[ "$BOOT_MODE" == "uefi" ]]; then
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT" 2>/dev/null || true)
         mkdir -p /boot/loader/entries
 
+        # verify kernel/initramfs exist under /boot
+        if [[ -f /boot/vmlinuz-linux ]] && [[ -f /boot/initramfs-linux.img ]]; then
+            KPATH="/vmlinuz-linux"
+            IPATH="/initramfs-linux.img"
+        elif [[ -f /vmlinuz-linux ]] && [[ -f /initramfs-linux.img ]]; then
+            KPATH="/vmlinuz-linux"
+            IPATH="/initramfs-linux.img"
+        else
+            warn "Không tìm thấy kernel hoặc initramfs trong /boot; sẽ KHÔNG tạo entry systemd-boot"
+            KPATH="/vmlinuz-linux"
+            IPATH="/initramfs-linux.img"
+        fi
+
         if [[ -n "$ROOT_UUID" ]]; then
             cat > /boot/loader/entries/arch.conf <<LOADER
 title   Arch Linux
-linux   /vmlinuz-linux
-initrd  /initramfs-linux.img
+linux   $KPATH
+initrd  $IPATH
 options root=UUID="$ROOT_UUID" rw
 LOADER
         else
             cat > /boot/loader/entries/arch.conf <<LOADER
 title   Arch Linux
-linux   /vmlinuz-linux
-initrd  /initramfs-linux.img
+linux   $KPATH
+initrd  $IPATH
 options root="$ROOT" rw
 LOADER
         fi
@@ -526,7 +579,11 @@ LOADER
             if grub-mkconfig -o /boot/grub/grub.cfg; then
                 info "✓ GRUB EFI đã cài thành công"
                 BOOTLOADER_OK=1
+            else
+                warn "grub-mkconfig thất bại"
             fi
+        else
+            warn "grub-install thất bại cho UEFI"
         fi
     fi
 else
@@ -537,7 +594,11 @@ else
         if grub-mkconfig -o /boot/grub/grub.cfg; then
             info "✓ GRUB BIOS đã cài thành công"
             BOOTLOADER_OK=1
+        else
+            warn "grub-mkconfig thất bại cho BIOS"
         fi
+    else
+        warn "grub-install thất bại cho BIOS"
     fi
 fi
 
@@ -584,7 +645,12 @@ fi
 
 # install AUR packages (best-effort)
 if command -v yay &>/dev/null; then
-    yay -S --noconfirm --needed wal-colors ttf-jetbrains-mono-nerd catppuccin-sddm-mocha hyprland-nvidia || true
+    # Install hyprland-nvidia only when NVIDIA GPU detected
+    if lspci | grep -qi NVIDIA; then
+        yay -S --noconfirm --needed wal-colors ttf-jetbrains-mono-nerd catppuccin-sddm-mocha hyprland-nvidia || true
+    else
+        yay -S --noconfirm --needed wal-colors ttf-jetbrains-mono-nerd catppuccin-sddm-mocha || true
+    fi
 fi
 
 # clone config repo if available
@@ -627,18 +693,23 @@ Type=Application
 DESKTOP
 
 # VM & NVIDIA env shims
+ZSHRC="/home/$USERNAME/.zshrc"
+if [[ ! -f "$ZSHRC" ]]; then
+    touch "$ZSHRC" 2>/dev/null || true
+    chown "$USERNAME:$USERNAME" "$ZSHRC" 2>/dev/null || true
+fi
 if [[ $IS_VM == "oracle" ]]; then
-    echo 'export WLR_NO_HARDWARE_CURSORS=1' >> /home/$USERNAME/.zshrc || true
+    echo 'export WLR_NO_HARDWARE_CURSORS=1' >> "$ZSHRC" || true
 fi
 if [[ $HAS_NVIDIA -eq 1 ]]; then
-    cat >> /home/$USERNAME/.zshrc <<NV
+    cat >> "$ZSHRC" <<NV
 export GBM_BACKEND=nvidia-drm
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
 export LIBVA_DRIVER_NAME=nvidia
 export WLR_RENDERER=vulkan
 NV
 fi
-chown "$USERNAME:$USERNAME" /home/"$USERNAME"/.zshrc 2>/dev/null || true
+chown "$USERNAME:$USERNAME" "$ZSHRC" 2>/dev/null || true
 
 # Set zsh as default shell if available
 if [[ -x /usr/bin/zsh ]]; then
@@ -657,11 +728,32 @@ EOF
 
 chmod +x /mnt/install.sh
 
+## Ensure DNS works inside chroot (bind host resolv.conf or copy fallback)
+RESOLV_BOUND=0
+if [[ -e /etc/resolv.conf ]]; then
+    if mount --bind /etc/resolv.conf /mnt/etc/resolv.conf 2>/dev/null; then
+        info "Bind /etc/resolv.conf vào chroot để có DNS"
+        RESOLV_BOUND=1
+    else
+        cp -L /etc/resolv.conf /mnt/etc/resolv.conf 2>/dev/null || warn "Không thể bind/copy /etc/resolv.conf vào chroot"
+        RESOLV_BOUND=0
+    fi
+fi
+
 # Run chroot script with environment
 progress_step "Installing and configuring system in chroot (this may take 10-15 minutes)..."
 info "Chạy script cài đặt trong chroot environment..."
 if ! arch-chroot /mnt env USERNAME="$USERNAME" HOSTNAME="$HOSTNAME" USER_PASS="$USER_PASS" ROOT_PASS="$ROOT_PASS" TIMEZONE="$TIMEZONE" LANG_CODE="$LANG_CODE" KEYMAP="$KEYMAP" DISK="$DISK" BOOT_MODE="$BOOT_MODE" ROOT="$ROOT" /install.sh; then
+    # cleanup resolv bind if present before failing out
+    if (( RESOLV_BOUND == 1 )); then
+        umount /mnt/etc/resolv.conf 2>/dev/null || true
+    fi
     error "Chroot script thất bại! Kiểm tra log tại $LOG. Hệ thống có thể chưa được cài đầy đủ."
+fi
+
+# cleanup resolv bind if used
+if (( RESOLV_BOUND == 1 )); then
+    umount /mnt/etc/resolv.conf 2>/dev/null || true
 fi
 
 # cleanup
