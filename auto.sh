@@ -27,6 +27,15 @@ info(){ echo -e "${GREEN}[+]${NC} $*"; }
 warn(){ echo -e "${YELLOW}[!]${NC} $*"; }
 error(){ echo -e "${RED}[✗]${NC} $*"; exit 1; }
 
+# Progress tracker
+STEP=0
+TOTAL_STEPS=12
+
+progress_step(){
+    STEP=$((STEP+1))
+    echo -e "${BLUE}[Step $STEP/$TOTAL_STEPS]${NC} $*"
+}
+
 cleanup() {
 umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
@@ -41,6 +50,7 @@ echo -e "${MAGENTA}║   Arch + Hyprland Invincible-Dots - FIXED V3 2025    ║$
 echo -e "${MAGENTA}╚══════════════════════════════════════════════════════╝${NC}"
 
 # Quick internet check (non-fatal — attempt fallback DNS if ping fails)
+progress_step "Checking internet connection..."
 if ! ping -c 1 -W 2 1.1.1.1 &>/dev/null; then
     warn "Không ping được 1.1.1.1 - thử kiểm tra kết nối DNS/HTTP..."
     if ! host archlinux.org &>/dev/null || ! curl -fsS --max-time 5 https://archlinux.org/ &>/dev/null; then
@@ -154,6 +164,7 @@ read_default(){
 }
 
 # Language & timezone menu - with validation
+progress_step "Configuring language and timezone..."
 echo -e "\n${YELLOW}Ngôn ngữ: 1) English  2) Tiếng Việt  3) 日本語${NC}"
 read -rp " → (mặc định 2): " lang_choice; lang_choice=${lang_choice:-2}
 case $lang_choice in
@@ -183,6 +194,7 @@ if [[ ! -f "/usr/share/zoneinfo/$TIMEZONE" ]]; then
 fi
 
 # Username & hostname validation
+progress_step "Setting up user and hostname..."
 while :; do
     read -rp "${BLUE}Username (a-z 0-9 _ -, mặc định: user): ${NC}" INPUT_USER
     USERNAME=${INPUT_USER:-user}
@@ -201,6 +213,7 @@ read -rsp "${BLUE}Password root (mặc định: root): ${NC}" ROOT_PASS; echo
 ROOT_PASS=${ROOT_PASS:-root}
 
 # Show physical disks
+progress_step "Selecting installation disk..."
 echo -e "\n${YELLOW}Danh sách ổ vật lý hiện có:${NC}"
 lsblk -dpo NAME,SIZE,MODEL || true
 
@@ -250,6 +263,7 @@ warn "TẤT CẢ DỮ LIỆU TRÊN $DISK SẼ BỊ XÓA!"
 read -rp "Gõ YES để đồng ý: " c; [[ "$c" = "YES" ]] || error "Hủy."
 
 # detect boot mode
+progress_step "Detecting boot mode (UEFI/BIOS)..."
 if [ -d /sys/firmware/efi/efivars ]; then
     BOOT_MODE=uefi
     info "Phát hiện hệ thống boot: UEFI"
@@ -263,6 +277,7 @@ wipefs -af "$DISK" 2>/dev/null || warn "wipefs gặp lỗi nhưng tiếp tục..
 sgdisk -Z "$DISK" 2>/dev/null || true
 
 # Partition layout (preserve behavior)
+progress_step "Creating partitions..."
 if [[ "$BOOT_MODE" == "uefi" ]]; then
     sgdisk -n 1:0:+512M -t 1:ef00 -c 1:"EFI"   "$DISK"
     sgdisk -n 2:0:+8G   -t 2:8200 -c 2:"Swap"  "$DISK"
@@ -316,6 +331,7 @@ for partition in "${ROOT}" "${SWAP}" "${EFI:-}" "${BIOSBOOT:-}"; do
 done
 
 info "Format partition(s), swap, root..."
+progress_step "Formatting filesystems..."
 umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 for pt in "${EFI:-}" "${BIOSBOOT:-}" "${SWAP:-}" "${ROOT:-}"; do
@@ -341,6 +357,7 @@ else
 fi
 
 # FIX #3: Generate fstab and validate content
+progress_step "Generating fstab..."
 info "Tạo fstab..."
 genfstab -U /mnt > /mnt/etc/fstab || error "genfstab thất bại"
 
@@ -359,6 +376,7 @@ fi
 info "✓ fstab hợp lệ"
 
 # Pacstrap with retry
+progress_step "Installing base system packages (this may take a while)..."
 info "Pacstrap base system..."
 PACKAGES=(base base-devel linux linux-firmware linux-headers git vim sudo networkmanager polkit seatd intel-ucode amd-ucode efibootmgr dosfstools grub)
 retry_cmd pacstrap -K /mnt "${PACKAGES[@]}" || error "pacstrap thất bại sau nhiều lần thử. Kiểm tra mạng và gói."
@@ -542,6 +560,12 @@ su - "$USERNAME" -s /bin/bash <<'ENDUSER'
 set +e
 export PATH="$HOME/.local/bin:$PATH"
 
+# Quick internet check in chroot
+if ! ping -c 1 -W 2 8.8.8.8 &>/dev/null; then
+    echo "[!] No internet in chroot - skipping AUR packages"
+    exit 0
+fi
+
 if ! command -v yay &>/dev/null; then
     echo "[+] Building yay from AUR..."
     if git clone https://aur.archlinux.org/yay.git /tmp/yay 2>/dev/null && cd /tmp/yay; then
@@ -634,6 +658,7 @@ EOF
 chmod +x /mnt/install.sh
 
 # Run chroot script with environment
+progress_step "Installing and configuring system in chroot (this may take 10-15 minutes)..."
 info "Chạy script cài đặt trong chroot environment..."
 if ! arch-chroot /mnt env USERNAME="$USERNAME" HOSTNAME="$HOSTNAME" USER_PASS="$USER_PASS" ROOT_PASS="$ROOT_PASS" TIMEZONE="$TIMEZONE" LANG_CODE="$LANG_CODE" KEYMAP="$KEYMAP" DISK="$DISK" BOOT_MODE="$BOOT_MODE" ROOT="$ROOT" /install.sh; then
     error "Chroot script thất bại! Kiểm tra log tại $LOG. Hệ thống có thể chưa được cài đầy đủ."
