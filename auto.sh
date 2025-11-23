@@ -153,7 +153,7 @@ read_default(){
     echo "${var:-$default}"
 }
 
-# Language & timezone menu
+# Language & timezone menu - with validation
 echo -e "\n${YELLOW}Ngôn ngữ: 1) English  2) Tiếng Việt  3) 日本語${NC}"
 read -rp " → (mặc định 2): " lang_choice; lang_choice=${lang_choice:-2}
 case $lang_choice in
@@ -161,6 +161,12 @@ case $lang_choice in
     1) LANG_CODE="en_US.UTF-8"; KEYMAP="us" ;;
     *) LANG_CODE="vi_VN.UTF-8"; KEYMAP="us" ;;
 esac
+
+# Validate locale exists in ArchISO
+if ! grep -q "^${LANG_CODE%.*}" /etc/locale.gen 2>/dev/null; then
+    warn "Locale $LANG_CODE không được hỗ trợ, dùng en_US.UTF-8"
+    LANG_CODE="en_US.UTF-8"
+fi
 
 echo -e "\n${YELLOW}Múi giờ: 1) Việt Nam  2) Hàn Quốc  3) Anh${NC}"
 read -rp " → (mặc định 1): " tz_choice; tz_choice=${tz_choice:-1}
@@ -252,7 +258,6 @@ else
     warn "Không tìm thấy EFI vars - hệ đang ở chế độ BIOS/Legacy. Sẽ tạo BIOS boot partition."
 fi
 
-# clean disk
 # clean disk
 wipefs -af "$DISK" 2>/dev/null || warn "wipefs gặp lỗi nhưng tiếp tục..."
 sgdisk -Z "$DISK" 2>/dev/null || true
@@ -376,11 +381,18 @@ if grep -q '^\s*#\s*\[multilib\]' /etc/pacman.conf; then
 fi
 
 # timezone/locale
-ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime || error "Timezone link thất bại"
+ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime || error "Timezone link thất bại"
 hwclock --systohc || true
 
-sed -i "s/^#\s*\($LANG_CODE.*\)/\1/" /etc/locale.gen || true
-locale-gen || error "locale-gen thất bại"
+# Use safe sed delimiter (|) to handle paths with slashes
+sed -i "s|^#\s*\($LANG_CODE.*\)|\1|" /etc/locale.gen || true
+
+# Generate locale and verify
+if ! locale-gen; then
+    warn "locale-gen thất bại, thử fallback en_US.UTF-8"
+    sed -i 's/^#\s*\(en_US.UTF-8\)/\1/' /etc/locale.gen
+    locale-gen || error "locale-gen fallback cũng thất bại"
+fi
 echo "LANG=$LANG_CODE" > /etc/locale.conf
 echo "KEYMAP=$KEYMAP" > /etc/vconsole.conf
 
@@ -442,7 +454,12 @@ fi
 info "Cài đặt Hyprland và packages chính..."
 pacman -Syu --noconfirm --needed hyprland kitty wofi pipewire wireplumber pipewire-pulse xdg-desktop-portal-hyprland zsh sddm archlinux-wallpaper python-pip || true
 
-systemctl enable NetworkManager sddm seatd pipewire wireplumber || true
+# Enable services and verify
+for service in NetworkManager sddm seatd pipewire wireplumber; do
+    if ! systemctl enable "$service" 2>/dev/null; then
+        warn "Could not enable $service"
+    fi
+done
 
 # Bootloader installation with verification
 BOOTLOADER_OK=0
@@ -460,14 +477,14 @@ if [[ "$BOOT_MODE" == "uefi" ]]; then
 title   Arch Linux
 linux   /vmlinuz-linux
 initrd  /initramfs-linux.img
-options root=UUID=${ROOT_UUID} rw
+options root=UUID="$ROOT_UUID" rw
 LOADER
         else
             cat > /boot/loader/entries/arch.conf <<LOADER
 title   Arch Linux
 linux   /vmlinuz-linux
 initrd  /initramfs-linux.img
-options root=${ROOT} rw
+options root="$ROOT" rw
 LOADER
         fi
 
@@ -522,22 +539,23 @@ fi
 
 # Create user AUR environment: build yay
 su - "$USERNAME" -s /bin/bash <<'ENDUSER'
-set -e
+set +e
 export PATH="$HOME/.local/bin:$PATH"
 
 if ! command -v yay &>/dev/null; then
     echo "[+] Building yay from AUR..."
-    git clone https://aur.archlinux.org/yay.git /tmp/yay && cd /tmp/yay || exit 0
-    if [[ -f PKGBUILD ]]; then
-        if makepkg -si --noconfirm; then
-            echo "[+] yay installed successfully"
-        else
-            echo "[!] yay build failed - skipping AUR packages"
-            cd / && rm -rf /tmp/yay || true
-            exit 0
+    if git clone https://aur.archlinux.org/yay.git /tmp/yay 2>/dev/null && cd /tmp/yay; then
+        if [[ -f PKGBUILD ]]; then
+            if makepkg -si --noconfirm 2>&1 | tail -5; then
+                echo "[+] yay installed successfully"
+            else
+                echo "[!] yay build failed - skipping AUR packages"
+            fi
         fi
+        cd / && rm -rf /tmp/yay 2>/dev/null || true
+    else
+        echo "[!] git clone failed - skipping yay"
     fi
-    cd / && rm -rf /tmp/yay || true
 fi
 
 # install AUR packages (best-effort)
@@ -547,20 +565,28 @@ fi
 
 # clone config repo if available
 if git clone --depth 1 https://github.com/mkhmtolzhas/Invincible-Dots.git /tmp/Invincible-Dots 2>/dev/null; then
+    mkdir -p ~/.config 2>/dev/null || true
     cp -r /tmp/Invincible-Dots/.config/* ~/.config/ 2>/dev/null || true
-    find ~/.config -type f -exec sed -i "s|mkhmtcore|$USERNAME|g" {} + 2>/dev/null || true
-    rm -rf /tmp/Invincible-Dots || true
+    find ~/.config -type f -exec sed -i "s|mkhmtcore|${USERNAME}|g" {} + 2>/dev/null || true
+    rm -rf /tmp/Invincible-Dots 2>/dev/null || true
 fi
 
 # apply wal if available (best-effort)
 wal -i /usr/share/backgrounds/archlinux/archwave.png 2>/dev/null || true
 ENDUSER
 
-# sddm theme config
+# sddm theme config (with fallback if theme not available)
 mkdir -p /etc/sddm.conf.d
+if [[ -d /usr/share/sddm/themes/catppuccin-mocha ]]; then
+    SDDM_THEME="catppuccin-mocha"
+else
+    warn "catppuccin-mocha theme not available, using default"
+    SDDM_THEME="default"
+fi
+
 cat > /etc/sddm.conf.d/kde_settings.conf <<SDDM
 [Theme]
-Current=catppuccin-mocha
+Current=$SDDM_THEME
 
 [General]
 DisplayServer=wayland
@@ -588,12 +614,19 @@ export LIBVA_DRIVER_NAME=nvidia
 export WLR_RENDERER=vulkan
 NV
 fi
-chown $USERNAME:$USERNAME /home/$USERNAME/.zshrc || true
+chown "$USERNAME:$USERNAME" /home/"$USERNAME"/.zshrc 2>/dev/null || true
 
-chsh -s /usr/bin/zsh "$USERNAME" || true
+# Set zsh as default shell if available
+if [[ -x /usr/bin/zsh ]]; then
+    chsh -s /usr/bin/zsh "$USERNAME" || warn "chsh failed for $USERNAME"
+else
+    warn "zsh not installed, keeping default shell"
+fi
 
 info "Rebuild initramfs với modules mới..."
-mkinitcpio -P || warn "mkinitcpio có warning nhưng tiếp tục..."
+if ! mkinitcpio -P; then
+    error "mkinitcpio failed! Hệ thống sẽ KHÔNG boot được. Kiểm tra error trên."
+fi
 
 info "✓ Cài đặt trong chroot hoàn tất"
 EOF
