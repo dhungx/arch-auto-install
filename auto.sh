@@ -610,9 +610,6 @@ fi
 rm -f /mnt/install.sh || true
 umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
-rm -f /mnt/install.sh || true
-umount -R /mnt 2>/dev/null || true
-swapoff -a 2>/dev/null || true
 
 echo ""
 echo -e "${MAGENTA}╔════════════════════════════════════════════════╗${NC}"
