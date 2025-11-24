@@ -2,19 +2,35 @@
 
 Tự động cài đặt **Arch Linux** với **Hyprland** desktop environment trên máy thật hoặc VirtualBox.
 
+## Mục Lục
+
+- [Hỗ trợ](#hỗ-trợ)
+- [Yêu cầu](#yêu-cầu)
+- [Cảnh báo quan trọng](#cảnh-báo-không-đảm-bảo-100-thành-công)
+  - [Yếu tố ảnh hưởng](#yếu-tố-ảnh-hưởng)
+  - [Tỷ lệ thành công](#tỷ-lệ-thành-công-dự-kiến)
+  - [Cách tăng xác suất](#cách-tăng-xác-suất-thành-công)
+- [Cài đặt](#cài-đặt)
+- [Sử dụng](#sử-dụng)
+- [Khắc phục sự cố](#khắc-phục-sự-cố)
+- [Packages được cài](#packages-được-cài)
+- [Tài liệu thêm](#tài-liệu-thêm)
+
+---
+
 ## Hỗ trợ
 
 - Máy thật (Bare Metal)
 - VirtualBox
 - Không hỗ trợ: KVM, QEMU, Hyper-V, VMware, v.v.
 
+[↑ Về mục lục](#mục-lục)
+
 ## Yêu cầu
 
 - Arch Linux ISO - Boot từ ArchISO live
 - Kết nối Internet (Ethernet khuyến nghị)
 - Ít nhất 20GB dung lượng ổ đĩa (40GB+ an toàn)
-- Root access - Chạy script với quyền root
-
 ---
 
 ## CẢNH BÁO: KHÔNG ĐẢM BẢO 100% THÀNH CÔNG
@@ -82,6 +98,8 @@ Không phải lỗi script, mà do Linux/hardware/network có quá nhiều biế
 - **Chuẩn bị 30-45 phút** - Không vội vàng
 - **Đọc log file** nếu fail: `/tmp/arch-install-v3.log`
 
+[↑ Về mục lục](#mục-lục)
+
 ---
 
 ## Cài đặt
@@ -100,7 +118,7 @@ Tải ArchISO từ [archlinux.org](https://archlinux.org/download/)
 
 Boot vào ArchISO live environment
 
-### 3. Kết nối Internet (nếu cần)
+### 3. Kết nối Internet
 
 **Ethernet:** Thường tự động DHCP
 
@@ -119,11 +137,11 @@ Kiểm tra: `ping 8.8.8.8`
 
 ```bash
 # Cách 1: Clone repository
-git clone https://github.com/dhungx/arch-auto-install.git
+git clone https://github.com/onlydohungx/arch-auto-install.git
 cd arch-auto-install
 
 # Cách 2: Tải file trực tiếp
-curl -O https://raw.githubusercontent.com/dhungx/arch-auto-install/main/auto.sh
+curl -O https://raw.githubusercontent.com/onlydohungx/arch-auto-install/main/auto.sh
 chmod +x auto.sh
 ```
 
@@ -161,7 +179,7 @@ Xem log: `/tmp/arch-install-v3.log`
 
 ### 8. Khởi động lại
 
-Nhập `reboot` để khởi động vào hệ thống mới
+Chọn `reboot` để khởi động vào hệ thống mới
 
 ## Sử dụng
 
@@ -194,6 +212,10 @@ sudo pacman -Syu
 sudo pacman -S package-name      # Official
 yay -S package-name              # AUR
 ```
+
+[↑ Về mục lục](#mục-lục)
+
+---
 
 ## Khắc phục Sự Cố
 
@@ -255,6 +277,10 @@ sudo pacman -S i3 i3status dmenu          # i3
 sudo pacman -S gnome gnome-extra          # GNOME
 ```
 
+[↑ Về mục lục](#mục-lục)
+
+---
+
 ## Packages Được Cài
 
 **Base System:**
@@ -280,12 +306,16 @@ sudo pacman -S gnome gnome-extra          # GNOME
 - hyprland-nvidia (nếu có NVIDIA GPU)
 - Invincible-Dots config
 
+[↑ Về mục lục](#mục-lục)
+
 ## Tài liệu Thêm
 
 - [Arch Linux Wiki](https://wiki.archlinux.org/)
 - [Hyprland Documentation](https://wiki.hyprland.org/)
 - [GRUB](https://wiki.archlinux.org/title/GRUB)
 - [systemd-boot](https://wiki.archlinux.org/title/Systemd-boot)
+
+[↑ Về mục lục](#mục-lục)
 
 ## License
 
