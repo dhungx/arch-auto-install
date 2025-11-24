@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 set -o errtrace
-# Arch + Hyprland Invincible-Dots – FIXED V3 (2025)
+# Arch + Hyprland Invincible-Dots – FIXED V3.1 (2025)
 
 LOG=/tmp/arch-install-v3.log
 rm -f "$LOG" || true; touch "$LOG"
@@ -10,8 +10,8 @@ exec > >(tee -a "$LOG") 2>&1
 
 err_report(){
     local rc=$?
-    echo -e "\n[✗] Lỗi xảy ra tại dòng ${BASH_LINENO[0]} (exit ${rc}). Xem log: $LOG" >&2
-    echo "--- TAIL $LOG (last 200 lines) ---" >&2
+    printf '\n%b (exit %d). Xem log: %s\n' "[✗] Lỗi xảy ra tại dòng ${BASH_LINENO[0]}" "$rc" "$LOG" >&2
+    printf '--- TAIL %s (last 200 lines) ---\n' "$LOG" >&2
     tail -n 200 "$LOG" >&2 || true
 }
 trap err_report ERR
@@ -23,9 +23,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[1;34m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
-info(){ echo -e "${GREEN}[+]${NC} $*"; }
-warn(){ echo -e "${YELLOW}[!]${NC} $*"; }
-error(){ echo -e "${RED}[✗]${NC} $*"; exit 1; }
+info(){ printf '%b\n' "${GREEN}[+]${NC} $*"; }
+warn(){ printf '%b\n' "${YELLOW}[!]${NC} $*"; }
+error(){ printf '%b\n' "${RED}[✗]${NC} $*"; exit 1; }
 
 # Progress tracker
 STEP=0
@@ -33,12 +33,12 @@ TOTAL_STEPS=12
 
 progress_step(){
     STEP=$((STEP+1))
-    echo -e "${BLUE}[Step $STEP/$TOTAL_STEPS]${NC} $*"
+        printf '%b\n' "${BLUE}[Step $STEP/$TOTAL_STEPS]${NC} $*"
 }
 
 cleanup() {
-umount -R /mnt 2>/dev/null || true
-swapoff -a 2>/dev/null || true
+    umount -R /mnt 2>/dev/null || true
+    swapoff -a 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -57,15 +57,6 @@ if ! ping -c 1 -W 2 1.1.1.1 &>/dev/null; then
         error "Không có Internet. Kiểm tra kết nối mạng và thử lại."
     fi
 fi
-
-# require_cmd: fatal if not present
-
-require_cmd(){
-    local cmd="$1"
-    if ! command -v "$cmd" &>/dev/null; then
-        error "Thiếu lệnh cần thiết: $cmd - dừng script. Cài đặt package tương ứng trên ArchISO trước khi chạy."
-    fi
-}
 
 # retry wrapper for commands (array-style)
 retry_cmd(){
@@ -118,22 +109,10 @@ if [[ ! -d /var/lib/pacman/sync ]]; then
     mkdir -p /var/lib/pacman/sync || true
 fi
 
-# Install reflector if possible (robust)
-if ! command -v reflector &>/dev/null; then
-    info "Cố gắng cài reflector tạm thời..."
-    retry_cmd pacman -Sy --noconfirm reflector || warn "Không thể cài reflector - bỏ qua."
-fi
-
-# Use reflector to update mirrorlist (if available)
-if command -v reflector &>/dev/null; then
-    info "Chọn mirror (Vietnam ưu tiên nếu có)..."
-    reflector --country Vietnam --latest 5 --sort rate --save /etc/pacman.d/mirrorlist --verbose || warn "reflector thất bại."
-else
-    info "Sử dụng mirrorlist fallback nếu cần..."
-    if [[ ! -s /etc/pacman.d/mirrorlist ]]; then
-        mkdir -p /etc/pacman.d
-        echo "Server = https://mirrors.huongnguyen.dev/arch/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist || true
-    fi
+# Do NOT auto-create or overwrite /etc/pacman.d/mirrorlist
+info "Giữ nguyên /etc/pacman.d/mirrorlist mặc định của Arch (không tự động thay đổi)."
+if [[ ! -s /etc/pacman.d/mirrorlist ]]; then
+    warn "/etc/pacman.d/mirrorlist không tồn tại hoặc rỗng. Hãy đảm bảo mirrorlist hợp lệ trước khi dùng pacman."
 fi
 
 # Ensure main repos exist in pacman.conf - safer check & append only if absent
@@ -308,6 +287,7 @@ get_partition_suffix() {
 }
 
 p=$(get_partition_suffix "$DISK")
+info "Partition suffix for $DISK: '${p:-none}'"
 
 if [[ "$BOOT_MODE" == "uefi" ]]; then
     EFI="${DISK}${p}1"
@@ -320,7 +300,7 @@ else
 fi
 
 sleep 1
-partprobe "$DISK" || true
+partprobe "$DISK" 2>/dev/null || warn "partprobe không thành công - tiếp tục"
 
 # FIX #2 & #6: Wait for partitions to appear with retry loop
 info "Chờ kernel nhận diện partitions..."
@@ -339,6 +319,15 @@ for partition in "${ROOT}" "${SWAP}" "${EFI:-}" "${BIOSBOOT:-}"; do
     done
 done
 
+# Verify all critical partitions exist and are ready
+for partition in "${ROOT}" "${SWAP}" "${EFI:-}" "${BIOSBOOT:-}"; do
+    if [[ -z "$partition" ]]; then continue; fi
+    if [[ ! -b "$partition" ]]; then
+        error "Partition $partition không tồn tại hoặc không khả dụng"
+    fi
+done
+info "✓ Tất cả partitions đã sẵn sàng"
+
 info "Format partition(s), swap, root..."
 progress_step "Formatting filesystems..."
 umount -R /mnt 2>/dev/null || true
@@ -346,28 +335,31 @@ swapoff -a 2>/dev/null || true
 for pt in "${EFI:-}" "${BIOSBOOT:-}" "${SWAP:-}" "${ROOT:-}"; do
     [[ -n "$pt" ]] && umount "$pt" 2>/dev/null || true
 done
+sleep 1
 
 if [[ "$BOOT_MODE" == "uefi" ]]; then
-    mkfs.fat -F32 "$EFI" || error "Format EFI partition thất bại"
+    mkfs.fat -F32 "$EFI" 2>/dev/null || error "Format EFI partition thất bại"
 fi
 
-mkswap "$SWAP" || error "mkswap thất bại"
-swapon "$SWAP" || error "swapon thất bại"
-mkfs.ext4 -F "$ROOT" || error "Format root partition thất bại"
+mkswap "$SWAP" 2>/dev/null || error "mkswap thất bại"
+swapon "$SWAP" 2>/dev/null || error "swapon thất bại"
+mkfs.ext4 -F "$ROOT" 2>/dev/null || error "Format root partition thất bại"
 
 # mount
-mount "$ROOT" /mnt || error "Mount root thất bại"
-mkdir -p /mnt/etc
+mount "$ROOT" /mnt || error "Mount root partition failed"
+mkdir -p /mnt/etc /mnt/boot || error "Cannot create /mnt directories"
 
 if [[ "$BOOT_MODE" == "uefi" ]]; then
+    mkdir -p /mnt/boot || error "Cannot create /mnt/boot directory"
     mount --mkdir "$EFI" /mnt/boot || error "Mount EFI thất bại"
 else
-    mkdir -p /mnt/boot
+    mkdir -p /mnt/boot || error "Cannot create /mnt/boot directory"
 fi
 
 # FIX #3: Generate fstab and validate content
 progress_step "Generating fstab..."
 info "Tạo fstab..."
+[[ ! -d /mnt/etc ]] && mkdir -p /mnt/etc || true
 genfstab -U /mnt > /mnt/etc/fstab || error "genfstab thất bại"
 
 # Verify fstab has actual entries
@@ -403,7 +395,7 @@ info "✓ fstab hợp lệ"
 # Pacstrap with retry
 progress_step "Installing base system packages (this may take a while)..."
 info "Pacstrap base system..."
-PACKAGES=(base base-devel linux linux-firmware linux-headers git vim sudo networkmanager polkit seatd intel-ucode amd-ucode efibootmgr dosfstools grub)
+PACKAGES=(base base-devel linux linux-firmware linux-headers git vim sudo networkmanager polkit seatd intel-ucode amd-ucode efibootmgr dosfstools grub curl)
 retry_cmd pacstrap -K /mnt "${PACKAGES[@]}" || error "pacstrap thất bại sau nhiều lần thử. Kiểm tra mạng và gói."
 
 # Prepare chroot script (improved, preserves original features)
@@ -411,18 +403,29 @@ cat > /mnt/install.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-export USERNAME HOSTNAME USER_PASS ROOT_PASS TIMEZONE LANG_CODE KEYMAP DISK BOOT_MODE ROOT
+export USERNAME HOSTNAME USER_PASS ROOT_PASS TIMEZONE LANG_CODE KEYMAP DISK BOOT_MODE ROOT IS_VM HAS_NVIDIA
 
 warn(){ echo -e "[!] $*"; }
 info(){ echo -e "[+] $*"; }
 error(){ echo -e "[✗] $*"; exit 1; }
+
+# Verify environment variables are set
+[[ -z "$USERNAME" ]] && error "USERNAME not set"
+[[ -z "$HOSTNAME" ]] && error "HOSTNAME not set"
+[[ -z "$ROOT" ]] && error "ROOT not set"
+
+# Default VM and GPU values if not provided
+IS_VM="${IS_VM:-none}"
+HAS_NVIDIA="${HAS_NVIDIA:-0}"
 
 # ensure multilib enabled (best-effort)
 if grep -q '^\s*#\s*\[multilib\]' /etc/pacman.conf; then
     # Safely uncomment only the header and associated Include line
     sed -i 's/^\s*#\s*\(\[multilib\]\)/\1/' /etc/pacman.conf || true
     sed -i '0,/\[multilib\]/{/Include *= *\/etc\/pacman.d\/mirrorlist/s/^\s*#\s*//}' /etc/pacman.conf || true
-    pacman -Syu --noconfirm || true
+    pacman -Syu --noconfirm 2>/dev/null || warn "pacman sync update failed in chroot"
+else
+    info "multilib already enabled"
 fi
 
 # timezone/locale
@@ -470,51 +473,73 @@ echo "root:$ROOT_PASS" | chpasswd || error "Set root password thất bại"
 echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/00-install
 chmod 440 /etc/sudoers.d/00-install || true
 
-IS_VM=$(systemd-detect-virt 2>/dev/null || echo none)
-IS_VM=${IS_VM:-none}
-
-# GPU detection
-if [[ $IS_VM != "none" ]] && [[ $IS_VM != "oracle" ]]; then
-    warn "VM không được hỗ trợ chính thức. Phát hiện: $IS_VM."
+# Check if VM info was provided, otherwise detect
+if [[ "$IS_VM" == "none" ]] || [[ "$IS_VM" == "oracle" ]]; then
+    info "VM mode: $IS_VM (provided from parent)"
+else
+    # Detect VM in chroot (fallback)
+    IS_VM=$(systemd-detect-virt 2>/dev/null || echo none)
+    IS_VM=${IS_VM:-none}
+    
+    # Check VM support - only support bare metal (none) and VirtualBox (oracle)
+    if [[ "$IS_VM" != "none" ]] && [[ "$IS_VM" != "oracle" ]]; then
+        error "Script chỉ hỗ trợ máy thật và VirtualBox. Phát hiện: $IS_VM - không được hỗ trợ!"
+    fi
+    
+    if [[ "$IS_VM" == "none" ]]; then
+        info "Phát hiện: Máy thật"
+    elif [[ "$IS_VM" == "oracle" ]]; then
+        info "Phát hiện: VirtualBox"
+    fi
 fi
 
-    HAS_NVIDIA=0
-    if [[ $IS_VM == "none" ]] && lspci | grep -iq 'VGA.*NVIDIA'; then
+# Check if GPU info was provided, otherwise detect
+if [[ $HAS_NVIDIA -eq 0 ]]; then
+    # Detect GPU in chroot (fallback)
+    if [[ $IS_VM == "none" ]] && lspci | grep -iq 'VGA.*NVIDIA' 2>/dev/null; then
         HAS_NVIDIA=1
         info "Phát hiện NVIDIA GPU - cài driver..."
-        pacman -S --noconfirm --needed nvidia nvidia-utils lib32-nvidia-utils nvidia-settings || true
-
-        # Safely add NVIDIA modules to MODULES=(...) in mkinitcpio.conf (idempotent)
-        if ! grep -qi "nvidia" /etc/mkinitcpio.conf; then
-            info "Thêm NVIDIA modules vào mkinitcpio.conf (an toàn & idempotent)"
-            if grep -q '^MODULES=' /etc/mkinitcpio.conf; then
-                current=$(sed -n 's/^MODULES=(\(.*\))/\1/p' /etc/mkinitcpio.conf || true)
-                for m in nvidia nvidia_modeset nvidia_uvm nvidia_drm; do
-                    if [[ ! " $current " =~ " $m " ]]; then
-                        current="$current $m"
-                    fi
-                done
-                # normalize spaces
-                current=$(echo $current)
-                sed -i "s|^MODULES=(.*)|MODULES=($current)|" /etc/mkinitcpio.conf || true
-            else
-                echo 'MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)' >> /etc/mkinitcpio.conf
-            fi
-        else
-            info "NVIDIA modules đã có trong mkinitcpio.conf - bỏ qua"
-        fi
     else
-        info "Cài Mesa drivers..."
-        pacman -S --noconfirm --needed mesa lib32-mesa vulkan-icd-loader lib32-vulkan-icd-loader || true
+        info "Sẽ cài Mesa drivers..."
     fi
+else
+    info "NVIDIA GPU detected (from parent) - cài driver..."
+fi
 
 # core packages
 info "Cài đặt Hyprland và packages chính..."
-pacman -Syu --noconfirm --needed hyprland kitty wofi pipewire wireplumber pipewire-pulse xdg-desktop-portal-hyprland zsh sddm archlinux-wallpaper python-pip || true
+if [[ $HAS_NVIDIA -eq 1 ]]; then
+    pacman -S --noconfirm --needed hyprland kitty wofi pipewire wireplumber pipewire-pulse xdg-desktop-portal-hyprland zsh sddm archlinux-wallpaper python-pip nvidia nvidia-utils lib32-nvidia-utils nvidia-settings 2>/dev/null || warn "Cài NVIDIA packages thất bại nhưng tiếp tục"
+else
+    pacman -S --noconfirm --needed hyprland kitty wofi pipewire wireplumber pipewire-pulse xdg-desktop-portal-hyprland zsh sddm archlinux-wallpaper python-pip mesa lib32-mesa vulkan-icd-loader lib32-vulkan-icd-loader 2>/dev/null || warn "Cài Mesa packages thất bại nhưng tiếp tục"
+fi
+
+# Safely add NVIDIA modules to MODULES=(...) in mkinitcpio.conf (idempotent) if GPU detected
+if [[ $HAS_NVIDIA -eq 1 ]] && ! grep -qi "nvidia" /etc/mkinitcpio.conf; then
+    info "Thêm NVIDIA modules vào mkinitcpio.conf (an toàn & idempotent)"
+    if grep -q '^MODULES=' /etc/mkinitcpio.conf; then
+        current=$(sed -n 's/^MODULES=(\(.*\))/\1/p' /etc/mkinitcpio.conf || true)
+        for m in nvidia nvidia_modeset nvidia_uvm nvidia_drm; do
+            if [[ ! " $current " =~ " $m " ]]; then
+                current="$current $m"
+            fi
+        done
+        # normalize spaces
+        current=$(echo $current)
+        # Replace the entire MODULES= line (safer than trying to use grouped regex)
+        sed -i "s|^MODULES=.*|MODULES=($current)|" /etc/mkinitcpio.conf || true
+    else
+        echo 'MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)' >> /etc/mkinitcpio.conf
+    fi
+elif [[ $HAS_NVIDIA -eq 1 ]]; then
+    info "NVIDIA modules đã có trong mkinitcpio.conf - bỏ qua"
+fi
 
 # Enable services and verify
 for service in NetworkManager sddm seatd pipewire wireplumber; do
-    if ! systemctl enable "$service" 2>/dev/null; then
+    if systemctl enable "$service" 2>/dev/null; then
+        info "✓ $service enabled"
+    else
         warn "Could not enable $service"
     fi
 done
@@ -524,10 +549,10 @@ BOOTLOADER_OK=0
 
 if [[ "$BOOT_MODE" == "uefi" ]]; then
     info "Cài đặt systemd-boot..."
-    pacman -S --noconfirm --needed efibootmgr dosfstools || true
+    pacman -S --noconfirm --needed efibootmgr dosfstools 2>/dev/null || warn "Cài efibootmgr/dosfstools thất bại"
 
-    if bootctl --path=/boot install; then
-        ROOT_UUID=$(blkid -s UUID -o value "$ROOT" 2>/dev/null || true)
+    if bootctl --path=/boot install 2>/dev/null; then
+        ROOT_UUID=$(blkid -s UUID -o value "$ROOT" 2>/dev/null || echo "")
         mkdir -p /boot/loader/entries
 
         # verify kernel/initramfs exist under /boot
@@ -571,12 +596,12 @@ LOADER
     # Fallback to GRUB if systemd-boot failed
     if [[ $BOOTLOADER_OK -eq 0 ]]; then
         info "Cài GRUB cho UEFI..."
-        pacman -S --noconfirm --needed grub efibootmgr dosfstools || true
+        pacman -S --noconfirm --needed grub efibootmgr dosfstools 2>/dev/null || warn "Cài grub thất bại"
         mkdir -p /boot/EFI/BOOT || true
 
-        if grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB; then
+        if grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB 2>/dev/null; then
             cp /boot/EFI/GRUB/grubx64.efi /boot/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
-            if grub-mkconfig -o /boot/grub/grub.cfg; then
+            if grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null; then
                 info "✓ GRUB EFI đã cài thành công"
                 BOOTLOADER_OK=1
             else
@@ -589,9 +614,9 @@ LOADER
 else
     # BIOS mode
     info "Cài GRUB cho BIOS..."
-    pacman -S --noconfirm --needed grub || true
-    if grub-install --target=i386-pc "$DISK"; then
-        if grub-mkconfig -o /boot/grub/grub.cfg; then
+    pacman -S --noconfirm --needed grub 2>/dev/null || warn "Cài grub thất bại"
+    if grub-install --target=i386-pc "$DISK" 2>/dev/null; then
+        if grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null; then
             info "✓ GRUB BIOS đã cài thành công"
             BOOTLOADER_OK=1
         else
@@ -629,7 +654,7 @@ fi
 
 if ! command -v yay &>/dev/null; then
     echo "[+] Building yay from AUR..."
-    if git clone https://aur.archlinux.org/yay.git /tmp/yay 2>/dev/null && cd /tmp/yay; then
+    if git clone --depth 1 https://aur.archlinux.org/yay.git /tmp/yay 2>/dev/null && cd /tmp/yay; then
         if [[ -f PKGBUILD ]]; then
             if makepkg -si --noconfirm 2>&1 | tail -5; then
                 echo "[+] yay installed successfully"
@@ -646,10 +671,10 @@ fi
 # install AUR packages (best-effort)
 if command -v yay &>/dev/null; then
     # Install hyprland-nvidia only when NVIDIA GPU detected
-    if lspci | grep -qi NVIDIA; then
-        yay -S --noconfirm --needed wal-colors ttf-jetbrains-mono-nerd catppuccin-sddm-mocha hyprland-nvidia || true
+    if [[ $HAS_NVIDIA -eq 1 ]]; then
+        yay -S --noconfirm --needed wal-colors ttf-jetbrains-mono-nerd catppuccin-sddm-mocha hyprland-nvidia 2>/dev/null || echo "[!] Some AUR packages failed"
     else
-        yay -S --noconfirm --needed wal-colors ttf-jetbrains-mono-nerd catppuccin-sddm-mocha || true
+        yay -S --noconfirm --needed wal-colors ttf-jetbrains-mono-nerd catppuccin-sddm-mocha 2>/dev/null || echo "[!] Some AUR packages failed"
     fi
 fi
 
@@ -662,11 +687,11 @@ if git clone --depth 1 https://github.com/mkhmtolzhas/Invincible-Dots.git /tmp/I
 fi
 
 # apply wal if available (best-effort)
-wal -i /usr/share/backgrounds/archlinux/archwave.png 2>/dev/null || true
+wal -i /usr/share/backgrounds/archlinux/archwave.png 2>/dev/null || echo "[!] wal configuration failed"
 ENDUSER
 
 # sddm theme config (with fallback if theme not available)
-mkdir -p /etc/sddm.conf.d
+mkdir -p /etc/sddm.conf.d || true
 if [[ -d /usr/share/sddm/themes/catppuccin-mocha ]]; then
     SDDM_THEME="catppuccin-mocha"
 else
@@ -674,7 +699,7 @@ else
     SDDM_THEME="default"
 fi
 
-cat > /etc/sddm.conf.d/kde_settings.conf <<SDDM
+cat > /etc/sddm.conf.d/kde_settings.conf <<SDDM || warn "Cannot write SDDM config"
 [Theme]
 Current=$SDDM_THEME
 
@@ -683,8 +708,8 @@ DisplayServer=wayland
 SDDM
 
 # hyprland session file
-mkdir -p /usr/share/wayland-sessions
-cat > /usr/share/wayland-sessions/hyprland.desktop <<DESKTOP
+mkdir -p /usr/share/wayland-sessions || true
+cat > /usr/share/wayland-sessions/hyprland.desktop <<DESKTOP || warn "Cannot write Hyprland session file"
 [Desktop Entry]
 Name=Hyprland
 Comment=A dynamic tiling Wayland compositor
@@ -699,10 +724,10 @@ if [[ ! -f "$ZSHRC" ]]; then
     chown "$USERNAME:$USERNAME" "$ZSHRC" 2>/dev/null || true
 fi
 if [[ $IS_VM == "oracle" ]]; then
-    echo 'export WLR_NO_HARDWARE_CURSORS=1' >> "$ZSHRC" || true
+    echo 'export WLR_NO_HARDWARE_CURSORS=1' >> "$ZSHRC" 2>/dev/null || warn "Cannot write VirtualBox env var to .zshrc"
 fi
 if [[ $HAS_NVIDIA -eq 1 ]]; then
-    cat >> "$ZSHRC" <<NV
+    cat >> "$ZSHRC" <<NV 2>/dev/null || warn "Cannot write NVIDIA env vars to .zshrc"
 export GBM_BACKEND=nvidia-drm
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
 export LIBVA_DRIVER_NAME=nvidia
@@ -713,14 +738,9 @@ chown "$USERNAME:$USERNAME" "$ZSHRC" 2>/dev/null || true
 
 # Set zsh as default shell if available
 if [[ -x /usr/bin/zsh ]]; then
-    chsh -s /usr/bin/zsh "$USERNAME" || warn "chsh failed for $USERNAME"
+    chsh -s /usr/bin/zsh "$USERNAME" 2>/dev/null || warn "chsh failed for $USERNAME"
 else
     warn "zsh not installed, keeping default shell"
-fi
-
-info "Rebuild initramfs với modules mới..."
-if ! mkinitcpio -P; then
-    error "mkinitcpio failed! Hệ thống sẽ KHÔNG boot được. Kiểm tra error trên."
 fi
 
 info "✓ Cài đặt trong chroot hoàn tất"
@@ -743,7 +763,7 @@ fi
 # Run chroot script with environment
 progress_step "Installing and configuring system in chroot (this may take 10-15 minutes)..."
 info "Chạy script cài đặt trong chroot environment..."
-if ! arch-chroot /mnt env USERNAME="$USERNAME" HOSTNAME="$HOSTNAME" USER_PASS="$USER_PASS" ROOT_PASS="$ROOT_PASS" TIMEZONE="$TIMEZONE" LANG_CODE="$LANG_CODE" KEYMAP="$KEYMAP" DISK="$DISK" BOOT_MODE="$BOOT_MODE" ROOT="$ROOT" /install.sh; then
+if ! arch-chroot /mnt env USERNAME="$USERNAME" HOSTNAME="$HOSTNAME" USER_PASS="$USER_PASS" ROOT_PASS="$ROOT_PASS" TIMEZONE="$TIMEZONE" LANG_CODE="$LANG_CODE" KEYMAP="$KEYMAP" DISK="$DISK" BOOT_MODE="$BOOT_MODE" ROOT="$ROOT" IS_VM="$IS_VM" HAS_NVIDIA="$HAS_NVIDIA" /install.sh; then
     # cleanup resolv bind if present before failing out
     if (( RESOLV_BOUND == 1 )); then
         umount /mnt/etc/resolv.conf 2>/dev/null || true
@@ -756,6 +776,12 @@ if (( RESOLV_BOUND == 1 )); then
     umount /mnt/etc/resolv.conf 2>/dev/null || true
 fi
 
+# Rebuild initramfs với modules mới
+info "Rebuild initramfs với modules mới..."
+if ! arch-chroot /mnt mkinitcpio -P; then
+    error "mkinitcpio failed! Hệ thống sẽ KHÔNG boot được. Kiểm tra error trên."
+fi
+
 # cleanup
 rm -f /mnt/install.sh || true
 umount -R /mnt 2>/dev/null || true
@@ -763,7 +789,7 @@ swapoff -a 2>/dev/null || true
 
 echo ""
 echo -e "${MAGENTA}╔════════════════════════════════════════════════╗${NC}"
-echo -e "${MAGENTA}║       CÀI ĐẶT HOÀN TẤT - FIXED SCRIPT V3       ║${NC}"
+echo -e "${MAGENTA}║       CÀI ĐẶT HOÀN TẤT - FIXED SCRIPT V3.1     ║${NC}"
 echo -e "${MAGENTA}╠════════════════════════════════════════════════╣${NC}"
 echo -e "${MAGENTA}║   User     : ${GREEN}$USERNAME${MAGENTA}       ║${NC}"
 echo -e "${MAGENTA}║   Hostname : ${GREEN}$HOSTNAME${MAGENTA}       ║${NC}"
