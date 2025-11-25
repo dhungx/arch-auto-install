@@ -94,13 +94,14 @@ fi
 # Fix pacman.conf: safely ensure repo sections exist and multilib uncommented
 info "Kiểm tra & sửa /etc/pacman.conf..."
 if [[ -f /etc/pacman.conf ]]; then
-    # Safely uncomment only the [multilib] header and its Include line
-    # Avoid uncommenting unrelated blocks by only touching the exact header
-    sed -i 's/^\s*#\s*\(\[multilib\]\)/\1/' /etc/pacman.conf || true
-    # Uncomment the Include line that is associated with the multilib header (first occurrence after header)
-    sed -i '0,/\[multilib\]/{/Include *= *\/etc\/pacman.d\/mirrorlist/s/^\s*#\s*//}' /etc/pacman.conf || true
-    # Also ensure any explicitly commented global Include lines are safely uncommented
-    sed -i 's/^\s*#\s*Include = \/etc\/pacman.d\/mirrorlist/Include = \/etc\/pacman.d\/mirrorlist/' /etc/pacman.conf || true
+    # Only uncomment [multilib] section if it exists but is commented
+    if grep -q '^\s*#\s*\[multilib\]' /etc/pacman.conf; then
+        sed -i '/^\s*#\s*\[multilib\]/,/^\s*#\s*Include.*\/etc\/pacman.d\/mirrorlist/{
+            s/^\s*#\s*\(\[multilib\]\)/\1/
+            s/^\s*#\s*\(Include.*\/etc\/pacman.d\/mirrorlist\)/\1/
+        }' /etc/pacman.conf || true
+        info "Uncommented [multilib] section in pacman.conf"
+    fi
 fi
 
 # ensure /var/lib/pacman/sync exists
@@ -109,15 +110,19 @@ if [[ ! -d /var/lib/pacman/sync ]]; then
     mkdir -p /var/lib/pacman/sync || true
 fi
 
-# Do NOT auto-create or overwrite /etc/pacman.d/mirrorlist
-info "Giữ nguyên /etc/pacman.d/mirrorlist mặc định của Arch (không tự động thay đổi)."
+# Validate mirrorlist exists
 if [[ ! -s /etc/pacman.d/mirrorlist ]]; then
-    warn "/etc/pacman.d/mirrorlist không tồn tại hoặc rỗng. Hãy đảm bảo mirrorlist hợp lệ trước khi dùng pacman."
+    warn "/etc/pacman.d/mirrorlist không tồn tại hoặc rỗng. Tạo fallback đơn giản..."
+    cat > /etc/pacman.d/mirrorlist <<'MIRRORS'
+# Arch Linux repository mirrorlist
+Server = https://mirror.archlinux.org/\$repo/os/\$arch
+Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
+MIRRORS
 fi
 
 # Ensure main repos exist in pacman.conf - safer check & append only if absent
 if ! grep -Eq '^\[core\]' /etc/pacman.conf; then
-    warn "Không tìm thấy [core] trong /etc/pacman.conf - thêm mặc định."
+    info "Thêm [core] repository vào pacman.conf"
     cat >> /etc/pacman.conf <<'REPOS'
 
 [core]
@@ -125,6 +130,7 @@ Include = /etc/pacman.d/mirrorlist
 REPOS
 fi
 if ! grep -Eq '^\[extra\]' /etc/pacman.conf; then
+    info "Thêm [extra] repository vào pacman.conf"
     cat >> /etc/pacman.conf <<'REPOS'
 
 [extra]
@@ -132,6 +138,7 @@ Include = /etc/pacman.d/mirrorlist
 REPOS
 fi
 if ! grep -Eq '^\[multilib\]' /etc/pacman.conf; then
+    info "Thêm [multilib] repository vào pacman.conf"
     cat >> /etc/pacman.conf <<'REPOS'
 
 [multilib]
@@ -398,6 +405,36 @@ info "Pacstrap base system..."
 PACKAGES=(base base-devel linux linux-firmware linux-headers git vim sudo networkmanager polkit seatd intel-ucode amd-ucode efibootmgr dosfstools grub curl)
 retry_cmd pacstrap -K /mnt "${PACKAGES[@]}" || error "pacstrap thất bại sau nhiều lần thử. Kiểm tra mạng và gói."
 
+# Detect VM environment (if not already set)
+progress_step "Detecting system environment..."
+if ! command -v systemd-detect-virt &>/dev/null; then
+    IS_VM="none"
+    info "systemd-detect-virt không khả dụng - giả định máy thật"
+else
+    IS_VM=$(systemd-detect-virt 2>/dev/null || echo none)
+    IS_VM=${IS_VM:-none}
+    
+    # Validate VM support
+    if [[ "$IS_VM" != "none" ]] && [[ "$IS_VM" != "oracle" ]]; then
+        error "Script chỉ hỗ trợ máy thật và VirtualBox. Phát hiện: $IS_VM - không được hỗ trợ!"
+    fi
+    
+    if [[ "$IS_VM" == "none" ]]; then
+        info "Phát hiện: Máy thật"
+    elif [[ "$IS_VM" == "oracle" ]]; then
+        info "Phát hiện: VirtualBox"
+    fi
+fi
+
+# Detect GPU (NVIDIA)
+if lspci 2>/dev/null | grep -iq 'VGA.*NVIDIA' && [[ "$IS_VM" == "none" ]]; then
+    HAS_NVIDIA=1
+    info "Phát hiện NVIDIA GPU - sẽ cài driver"
+else
+    HAS_NVIDIA=0
+    info "Sẽ cài Mesa drivers"
+fi
+
 # Prepare chroot script (improved, preserves original features)
 cat > /mnt/install.sh <<'EOF'
 #!/usr/bin/env bash
@@ -420,9 +457,11 @@ HAS_NVIDIA="${HAS_NVIDIA:-0}"
 
 # ensure multilib enabled (best-effort)
 if grep -q '^\s*#\s*\[multilib\]' /etc/pacman.conf; then
-    # Safely uncomment only the header and associated Include line
-    sed -i 's/^\s*#\s*\(\[multilib\]\)/\1/' /etc/pacman.conf || true
-    sed -i '0,/\[multilib\]/{/Include *= *\/etc\/pacman.d\/mirrorlist/s/^\s*#\s*//}' /etc/pacman.conf || true
+    info "Uncomment [multilib] section..."
+    sed -i '/^\s*#\s*\[multilib\]/,/^\s*#\s*Include.*\/etc\/pacman.d\/mirrorlist/{
+        s/^\s*#\s*\(\[multilib\]\)/\1/
+        s/^\s*#\s*\(Include.*\/etc\/pacman.d\/mirrorlist\)/\1/
+    }' /etc/pacman.conf || true
     pacman -Syu --noconfirm 2>/dev/null || warn "pacman sync update failed in chroot"
 else
     info "multilib already enabled"
@@ -437,8 +476,9 @@ if ! grep -q "^${LANG_CODE%.*}" /etc/locale.gen 2>/dev/null; then
     warn "Locale $LANG_CODE không có trong /etc/locale.gen — sẽ dùng en_US.UTF-8"
     LANG_CODE="en_US.UTF-8"
 fi
-# Uncomment only the exact requested locale
-sed -i "s/^#\s*${LANG_CODE}/${LANG_CODE}/" /etc/locale.gen || true
+# Uncomment only the exact requested locale (escape special chars in replacement)
+LANG_ESCAPED=$(echo "$LANG_CODE" | sed 's/[&/\]/\\&/g')
+sed -i "s/^#\s*\($(echo "$LANG_CODE" | sed 's/[&/\]/\\&/g')\)/\1/" /etc/locale.gen || true
 
 # Generate locale and verify
 if ! locale-gen; then
@@ -518,18 +558,23 @@ fi
 if [[ $HAS_NVIDIA -eq 1 ]] && ! grep -qi "nvidia" /etc/mkinitcpio.conf; then
     info "Thêm NVIDIA modules vào mkinitcpio.conf (an toàn & idempotent)"
     if grep -q '^MODULES=' /etc/mkinitcpio.conf; then
-        current=$(sed -n 's/^MODULES=(\(.*\))/\1/p' /etc/mkinitcpio.conf || true)
+        # Extract current modules, add nvidia modules, replace line safely
+        current=$(grep '^MODULES=' /etc/mkinitcpio.conf | sed 's/^MODULES=(\(.*\))$/\1/' || true)
+        # Add nvidia modules if not present
         for m in nvidia nvidia_modeset nvidia_uvm nvidia_drm; do
-            if [[ ! " $current " =~ " $m " ]]; then
+            if [[ ! "$current" =~ $m ]]; then
                 current="$current $m"
             fi
         done
-        # normalize spaces
-        current=$(echo $current)
-        # Replace the entire MODULES= line (safer than trying to use grouped regex)
-        sed -i "s|^MODULES=.*|MODULES=($current)|" /etc/mkinitcpio.conf || true
+        # Normalize spaces and create new line
+        current=$(echo $current | tr -s ' ')
+        # Use a temporary file to safely replace the line
+        sed -i '/^MODULES=/d' /etc/mkinitcpio.conf || true
+        echo "MODULES=($current)" >> /etc/mkinitcpio.conf
+        info "✓ NVIDIA modules added to mkinitcpio.conf"
     else
         echo 'MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)' >> /etc/mkinitcpio.conf
+        info "✓ MODULES= line created with NVIDIA modules"
     fi
 elif [[ $HAS_NVIDIA -eq 1 ]]; then
     info "NVIDIA modules đã có trong mkinitcpio.conf - bỏ qua"
