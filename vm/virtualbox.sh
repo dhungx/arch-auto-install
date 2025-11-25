@@ -8,13 +8,13 @@ LOG=/tmp/vm-fix.log
 rm -f "$LOG" || true; touch "$LOG"
 exec > >(tee -a "$LOG") 2>&1
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[1;34m'
-MAGENTA='\033[0;35m'
-NC='\033[0m'
+# Colors (use $'...' so variables contain real escape bytes)
+RED=$'\e[0;31m'
+GREEN=$'\e[0;32m'
+YELLOW=$'\e[1;33m'
+BLUE=$'\e[1;34m'
+MAGENTA=$'\e[0;35m'
+NC=$'\e[0m'
 
 info(){ printf '%b\n' "${GREEN}[+]${NC} $*"; }
 warn(){ printf '%b\n' "${YELLOW}[!]${NC} $*"; }
@@ -28,7 +28,7 @@ echo -e "${MAGENTA}╚═══════════════════�
 echo ""
 
 # Check if running as root
-[[ $EUID -ne 0 ]] && error "Phải chạy script với sudo! (sudo bash fix-vm.sh)"
+[[ $EUID -ne 0 ]] && error "Phải chạy script với sudo! (ví dụ: sudo ./vm/virtualbox.sh)"
 
 # Detect if running in VirtualBox
 info "Kiểm tra môi trường VM..."
@@ -39,7 +39,6 @@ else
 fi
 
 if [[ "$VM_TYPE" != "oracle" ]] && ! lspci 2>/dev/null | grep -iq "VirtualBox\|VMware SVGA"; then
-    warn "Script này chỉ dành cho VirtualBox!"
     read -rp "Bạn có chắc muốn tiếp tục? (yes/no): " confirm
     [[ "$confirm" != "yes" ]] && error "Hủy bỏ - script chỉ dùng cho VirtualBox"
 fi
@@ -53,13 +52,12 @@ if ! ping -c 1 -W 3 8.8.8.8 &>/dev/null; then
 fi
 info "✓ Kết nối Internet OK"
 
-# Step 1: Install VirtualBox Guest Additions
 echo ""
 info "═══════════════════════════════════════════════════"
 info "Bước 1: Cài VirtualBox Guest Additions + Drivers"
 info "═══════════════════════════════════════════════════"
 
-PACKAGES=(virtualbox-guest-utils xf86-video-vmware)
+PACKAGES=(virtualbox-guest-utils)
 FAILED_PACKAGES=()
 
 for pkg in "${PACKAGES[@]}"; do
@@ -222,7 +220,7 @@ cat > "$TROUBLESHOOT_FILE" <<'TROUBLE'
 ║        VirtualBox VM Troubleshooting Guide         ║
 ╚════════════════════════════════════════════════════╝
 
-Nếu sau khi reboot vẫn застряva ở TTY:
+Nếu sau khi reboot vẫn kẹt ở TTY:
 
 1. KIỂM TRA 3D ACCELERATION (QUAN TRỌNG!):
    - Tắt VM
@@ -306,7 +304,7 @@ echo -e "${BLUE}📋 Troubleshoot guide: $TROUBLESHOOT_FILE${NC}"
 echo ""
 
 # Ask for reboot
-read -rp "$(echo -e ${YELLOW}Bạn có muốn reboot ngay bây giờ? ${GREEN}[yes/no]:${NC} )" REBOOT_CHOICE
+read -rp "Bạn có muốn reboot ngay bây giờ? [yes/no]: " REBOOT_CHOICE
 
 if [[ "$REBOOT_CHOICE" =~ ^[Yy]([Ee][Ss])?$ ]]; then
     echo ""
