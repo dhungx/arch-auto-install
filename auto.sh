@@ -16,13 +16,13 @@ err_report(){
 }
 trap err_report ERR
 
-# COLORS & helpers
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[1;34m'
-MAGENTA='\033[0;35m'
-NC='\033[0m'
+# COLORS & helpers (use $'...' so variables contain real escape bytes)
+RED=$'\e[0;31m'
+GREEN=$'\e[0;32m'
+YELLOW=$'\e[1;33m'
+BLUE=$'\e[1;34m'
+MAGENTA=$'\e[0;35m'
+NC=$'\e[0m'
 info(){ printf '%b\n' "${GREEN}[+]${NC} $*"; }
 warn(){ printf '%b\n' "${YELLOW}[!]${NC} $*"; }
 error(){ printf '%b\n' "${RED}[✗]${NC} $*"; exit 1; }
