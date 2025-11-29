@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 set -o errtrace
-# Arch + Hyprland Invincible-Dots – FIXED V3.1 (2025)
+# Arch + Hyprland PilkDots – FIXED V3.1 (2025)
 
 LOG=/tmp/arch-install-v3.log
 rm -f "$LOG" || true; touch "$LOG"
@@ -46,7 +46,7 @@ trap cleanup EXIT
 
 clear
 echo -e "${MAGENTA}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${MAGENTA}║   Arch + Hyprland Invincible-Dots - FIXED V3 2025    ║${NC}"
+echo -e "${MAGENTA}║       Arch + Hyprland PilkDots - FIXED V3 2025       ║${NC}"
 echo -e "${MAGENTA}╚══════════════════════════════════════════════════════╝${NC}"
 
 # Quick internet check (non-fatal — attempt fallback DNS if ping fails)
@@ -715,20 +715,18 @@ fi
 
 # install AUR packages (best-effort)
 if command -v yay &>/dev/null; then
-    # Install hyprland-nvidia only when NVIDIA GPU detected
-    if [[ $HAS_NVIDIA -eq 1 ]]; then
-        yay -S --noconfirm --needed wal-colors ttf-jetbrains-mono-nerd catppuccin-sddm-mocha hyprland-nvidia 2>/dev/null || echo "[!] Some AUR packages failed"
-    else
-        yay -S --noconfirm --needed wal-colors ttf-jetbrains-mono-nerd catppuccin-sddm-mocha 2>/dev/null || echo "[!] Some AUR packages failed"
-    fi
+    yay -S --noconfirm --needed \
+        hyprland wlogout waypaper waybar swww rofi-wayland swaync nemo kitty pavucontrol \
+        gtk3 gtk2 xcur2png gsettings nwg-look fastfetch zsh oh-my-zsh-git hyprshot \
+        networkmanager networkmanager-qt nm-connection-editor \
+        ttf-firacode-nerd nerd-fonts-jetbrains-mono 2>/dev/null || echo "[!] Some AUR packages failed"
 fi
-
-# clone config repo if available
-if git clone --depth 1 https://github.com/mkhmtolzhas/Invincible-Dots.git /tmp/Invincible-Dots 2>/dev/null; then
-    mkdir -p ~/.config 2>/dev/null || true
-    cp -r /tmp/Invincible-Dots/.config/* ~/.config/ 2>/dev/null || true
-    find ~/.config -type f -exec sed -i "s|mkhmtcore|${USERNAME}|g" {} + 2>/dev/null || true
-    rm -rf /tmp/Invincible-Dots 2>/dev/null || true
+# clone PilkDots config repo (after packages installed)
+if git clone --depth 1 https://github.com/PilkDrinker/PilkDots.git /tmp/PilkDots 2>/dev/null; then
+    mkdir -p "$HOME/.config" 2>/dev/null || true
+    cp -r /tmp/PilkDots/.config/* "$HOME/.config/" 2>/dev/null || true
+    chown -R "$USER":"$USER" "$HOME/.config" 2>/dev/null || true
+    rm -rf /tmp/PilkDots 2>/dev/null || true
 fi
 
 # apply wal if available (best-effort)
@@ -841,7 +839,7 @@ echo -e "${MAGENTA}║   Hostname : ${GREEN}$HOSTNAME${MAGENTA}       ║${NC}"
 echo -e "${MAGENTA}║   Boot Mode: ${GREEN}$BOOT_MODE${MAGENTA}      ║${NC}"
 echo -e "${MAGENTA}║   Root Dev : ${GREEN}$ROOT${MAGENTA}           ║${NC}"
 echo -e "${MAGENTA}╠════════════════════════════════════════════════╣${NC}"
-echo -e "${MAGENTA}║  ${YELLOW}Khởi động lại máy: reboot${MAGENTA}       ║${NC}"
+echo -e "${MAGENTA}║  ${YELLOW}Khởi động lại máy: reboot${MAGENTA}  ║${NC}"
 echo -e "${MAGENTA}║  ${YELLOW}Log file: $LOG${MAGENTA}             ║${NC}"
 echo -e "${MAGENTA}╚════════════════════════════════════════════════╝${NC}"
 echo ""
